@@ -23,19 +23,23 @@ class HuaweiAdapterClimate(AdapterEntityMixin, ClimateEntity):
         self._init_adapter_entity(context, spec)
         metadata = spec.metadata
         self._attr_hvac_modes = list(metadata.get("hvac_modes", (HVACMode.AUTO,)))
-        self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
-        if metadata.get("fan_modes"):
-            self._attr_supported_features |= ClimateEntityFeature.FAN_MODE
-        if metadata.get("swing_modes"):
-            self._attr_supported_features |= ClimateEntityFeature.SWING_MODE
+        features = ClimateEntityFeature(0)
+        if "set_temperature" in spec.actions:
+            features |= ClimateEntityFeature.TARGET_TEMPERATURE
+        if metadata.get("fan_modes") and "set_fan_mode" in spec.actions:
+            features |= ClimateEntityFeature.FAN_MODE
+        if metadata.get("swing_modes") and "set_swing_mode" in spec.actions:
+            features |= ClimateEntityFeature.SWING_MODE
         if "turn_on" in spec.actions:
-            self._attr_supported_features |= ClimateEntityFeature.TURN_ON
+            features |= ClimateEntityFeature.TURN_ON
         if "turn_off" in spec.actions:
-            self._attr_supported_features |= ClimateEntityFeature.TURN_OFF
+            features |= ClimateEntityFeature.TURN_OFF
+        self._attr_supported_features = features
         self._attr_fan_modes = list(metadata.get("fan_modes", ()))
         self._attr_swing_modes = list(metadata.get("swing_modes", ()))
         self._attr_min_temp = metadata.get("min_temp")
         self._attr_max_temp = metadata.get("max_temp")
+        self._attr_target_temperature_step = metadata.get("target_temperature_step", 0.1)
         self._attr_temperature_unit = metadata.get(
             "temperature_unit",
             UnitOfTemperature.CELSIUS,

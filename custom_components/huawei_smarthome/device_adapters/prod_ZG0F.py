@@ -451,31 +451,43 @@ def _delay_values(ctx):
 def _radar_tuning_entities(ctx):
     if (ctx.prod_id or "").upper() != "ZG0F":
         return ()
+    if (ctx.profile or {}).get("prodId") != "ZG0F":
+        return ()
     result = []
-    options = {"高": 2, "中": 3, "低": 4}
-    if _writable(ctx, "basicFence", "sensitivity"):
+    sensitivity_field = _field(ctx, "basicFence", "sensitivity") or {}
+    reported_labels = {
+        str(option.get("enumVal")): option.get("descCh")
+        for option in sensitivity_field.get("enumList", [])
+        if option.get("descCh")
+    }
+    options = {
+        reported_labels[str(value)]: value
+        for value in (2, 3, 4)
+        if reported_labels.get(str(value))
+    }
+    display_options = tuple(options) + tuple(
+        label
+        for code in ("0", "1")
+        if (label := reported_labels.get(code)) and label not in options
+    )
+    if _writable(ctx, "basicFence", "sensitivity") and options:
 
         async def sensitivity(c, data):
             if data.get("option") not in options:
                 raise ValueError("Unsupported sensitivity")
             await _send(c, "basicFence", "sensitivity", options[data["option"]])
 
+        def sensitivity_state(c):
+            raw = c.value("basicFence", "sensitivity")
+            return {"current_option": reported_labels.get(str(raw))}
+
         result.append(
             EntitySpec(
                 "select",
                 "radar_sensitivity",
                 "检测灵敏度",
-                lambda c: {
-                    "current_option": next(
-                        (
-                            label
-                            for label, value in options.items()
-                            if str(c.value("basicFence", "sensitivity")) == str(value)
-                        ),
-                        None,
-                    )
-                },
-                {"options": tuple(options)},
+                sensitivity_state,
+                {"options": display_options},
                 {"select_option": sensitivity},
             )
         )

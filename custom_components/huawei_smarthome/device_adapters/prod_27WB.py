@@ -148,6 +148,9 @@ def _sensor(
 
 
 def _covers(ctx):
+    profile = ctx.profile or {}
+    if (profile.get("prodId") or "").casefold() != "27wb":
+        return ()
     sid = key = "action"
     schema = _field(ctx, sid, key)
     if not schema or not _writable(ctx, sid, key):
@@ -169,16 +172,21 @@ def _covers(ctx):
             await _send(c, sid, key, value)
 
         actions[name] = action
-    positions = False
-    if positions and _writable(ctx, "opener", "target"):
-
-        async def position(c, data):
-            await _send(c, "opener", "target", data["position"])
-
-        actions["set_position"] = position
+    # The Profile reports opener.current on a 0–100 scale and the vendor H5
+    # quick-state rule defines 100 as fully open and 0 as fully closed.  Keep
+    # this mapping read-only: a confirmed state scale does not by itself verify
+    # that HA position commands should be sent to opener.target.
+    current_schema = _field(ctx, "opener", "current") or {}
+    positions = (
+        "R" in current_schema.get("method", "")
+        and _number(current_schema.get("min")) == 0
+        and _number(current_schema.get("max")) == 100
+    )
 
     def state(c):
         value = _numeric(c, "opener", "current") if positions else None
+        if value is not None and not value.is_integer():
+            value = None
         return {
             "current_position": int(value) if value is not None else None,
             "is_closed": value == 0 if value is not None else None,
@@ -189,8 +197,9 @@ def _covers(ctx):
             "cover", "curtain", "窗帘", state, {"device_class": "curtain"}, actions
         )
     ]
-    if not positions:
-        result.append(_sensor(ctx, "opener", "current", "位置原始值", unit="%"))
+    raw_position = _sensor(ctx, "opener", "current", "位置原始值", unit="%")
+    if raw_position:
+        result.append(raw_position)
     return tuple((e for e in result if e))
 
 
