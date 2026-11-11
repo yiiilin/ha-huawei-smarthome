@@ -71,6 +71,14 @@ async def _select_play_control(context: DeviceContext, data: Mapping[str, Any]) 
     await context.async_send_service("smartspeaker", {"playControl": val})
 
 
+async def _play(context: DeviceContext, _data: Mapping[str, Any]) -> None:
+    await context.async_send_service("smartspeaker", {"playControl": 1})
+
+
+async def _pause(context: DeviceContext, _data: Mapping[str, Any]) -> None:
+    await context.async_send_service("smartspeaker", {"playControl": 0})
+
+
 # ---- 适配器 --------------------------------------------------------------
 
 class ProductX0A5Adapter:
@@ -104,7 +112,24 @@ class ProductX0A5Adapter:
                 return {"current_option": "启动播放"}
             return {"current_option": "停止播放"}
 
+        def player_state(device: DeviceContext) -> Mapping[str, Any]:
+            val = _as_int(device.value("audioplayer", "playState"))
+            return {
+                "state": (
+                    "playing"
+                    if val == 1
+                    else "paused"
+                    if val == 0
+                    else "idle"
+                    if val == 2
+                    else None
+                ),
+            }
+
         return (
+            EntitySpec(platform="media_player", key="player", name="播放",
+                       state=player_state, metadata={},
+                       actions={"play": _play, "pause": _pause, "stop": _pause}),
             EntitySpec(platform="sensor", key="speaker_state", name="音箱状态",
                        state=speaker_state, metadata={"icon": "mdi:speaker"}),
             EntitySpec(platform="sensor", key="play_state", name="播放状态",

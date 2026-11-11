@@ -48,6 +48,7 @@ from typing import Any, Mapping
 
 from .api import EntitySpec
 from .context import DeviceContext
+from .panel_events import panel_key_names, scene_event_spec
 
 _SWITCH_SIDS = ("switch1", "switch2", "switch3")
 _SWITCH_FIELD = "on"
@@ -370,6 +371,10 @@ class ProductZG11Adapter:
                     actions={},
                 )
             )
+
+        event = scene_event_spec(context, key_names=panel_key_names(context))
+        if event is not None:
+            entities.append(event)
 
         return tuple(entities)
 

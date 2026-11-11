@@ -89,6 +89,7 @@ from typing import Any
 
 from .api import EntitySpec
 from .context import DeviceContext
+from .panel_events import panel_key_names, scene_event_spec
 
 
 def _service(profile: Any, sid: str) -> Any:
@@ -361,6 +362,10 @@ class ProductZG0EAdapter:
         for spec in (_luminance_sensor(profile), _fault_sensor(profile)):
             if spec is not None:
                 specs.append(spec)
+
+        event = scene_event_spec(context, key_names=panel_key_names(context))
+        if event is not None:
+            specs.append(event)
 
         return tuple(specs)
 

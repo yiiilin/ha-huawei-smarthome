@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .api import EntitySpec, HuaweiProductAdapter
+from .panel_events import panel_key_names, scene_event_spec
 from .product_helpers import bool_value, can_read, can_write, matches_product, send_profile_value
 
 
@@ -46,6 +47,9 @@ class ZG0DAdapter:
                     actions=actions,
                 )
             )
+        event = scene_event_spec(context, key_names=panel_key_names(context))
+        if event is not None:
+            specs.append(event)
         return tuple(specs)
 
 

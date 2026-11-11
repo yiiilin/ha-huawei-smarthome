@@ -172,10 +172,20 @@ def _covers(ctx):
             await _send(c, sid, key, value)
 
         actions[name] = action
+    if _writable(ctx, "opener", "target"):
+
+        async def set_position(c, data):
+            position = _number(data.get("position"))
+            if position is None:
+                raise ValueError("A numeric target position is required")
+            await _send(c, "opener", "target", int(round(max(0.0, min(100.0, position)))))
+
+        actions["set_position"] = set_position
     # The Profile reports opener.current on a 0–100 scale and the vendor H5
-    # quick-state rule defines 100 as fully open and 0 as fully closed.  Keep
-    # this mapping read-only: a confirmed state scale does not by itself verify
-    # that HA position commands should be sent to opener.target.
+    # quick-state rule defines 100 as fully open and 0 as fully closed.  The
+    # sibling product 2CPZ ships the same opener service and its curtain reacts
+    # to opener.target writes, so the same channel is offered here; the target
+    # field is only exposed when the Profile marks it writable.
     current_schema = _field(ctx, "opener", "current") or {}
     positions = (
         "R" in current_schema.get("method", "")
