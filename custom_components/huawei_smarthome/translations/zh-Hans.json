@@ -55,5 +55,25 @@
         }
       }
     }
+  },
+  "services": {
+    "voice_command": {
+      "name": "语音命令",
+      "description": "向支持的华为智慧生活音箱发送自然语言命令。",
+      "fields": {
+        "device_id": {
+          "name": "目标设备",
+          "description": "执行该命令的华为智慧生活音箱设备。"
+        },
+        "command": {
+          "name": "命令",
+          "description": "发送给音箱助手的自然语言命令。"
+        },
+        "silent": {
+          "name": "静默执行",
+          "description": "执行命令时抑制音箱的语音响应。"
+        }
+      }
+    }
   }
 }

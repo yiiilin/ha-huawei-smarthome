@@ -55,5 +55,25 @@
         }
       }
     }
+  },
+  "services": {
+    "voice_command": {
+      "name": "Voice command",
+      "description": "Send a natural-language command to a supported Huawei SmartHome speaker.",
+      "fields": {
+        "device_id": {
+          "name": "Target device",
+          "description": "Huawei SmartHome speaker device that should execute the command."
+        },
+        "command": {
+          "name": "Command",
+          "description": "Natural-language command to send to the speaker assistant."
+        },
+        "silent": {
+          "name": "Silent",
+          "description": "Suppress the speaker's voice response while executing the command."
+        }
+      }
+    }
   }
 }

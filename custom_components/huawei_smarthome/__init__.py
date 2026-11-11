@@ -2,22 +2,116 @@
 
 from __future__ import annotations
 
+import asyncio
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from .const import CONF_ACCOUNT, CONF_SELECTED_HOME_IDS, DOMAIN, PLATFORMS
+from .const import (
+    ATTR_COMMAND,
+    ATTR_SILENT,
+    CONF_ACCOUNT,
+    CONF_SELECTED_HOME_IDS,
+    DOMAIN,
+    PLATFORMS,
+    SERVICE_VOICE_COMMAND,
+)
+from .device_registry import device_identifier
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant
+    from homeassistant.core import HomeAssistant, ServiceCall
     from homeassistant.helpers.device_registry import DeviceEntry
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Huawei SmartHome integration domain."""
 
-    del hass, config
+    del config
+    from homeassistant.const import ATTR_DEVICE_ID
+    import homeassistant.helpers.config_validation as cv
+    from homeassistant.exceptions import HomeAssistantError
+    import voluptuous as vol
+
+    async def handle_voice_command(call: ServiceCall) -> None:
+        target_ids = _target_ids(call.data.get(ATTR_DEVICE_ID))
+        if not target_ids:
+            raise HomeAssistantError(
+                f"{SERVICE_VOICE_COMMAND} requires a target device"
+            )
+        contexts = _voice_command_contexts(hass, target_ids)
+        if not contexts:
+            raise HomeAssistantError(
+                "no targeted Huawei SmartHome device supports voice_command"
+            )
+        data = {
+            ATTR_COMMAND: call.data[ATTR_COMMAND],
+            ATTR_SILENT: call.data.get(ATTR_SILENT, True),
+        }
+        await asyncio.gather(
+            *(
+                context.async_run_service(SERVICE_VOICE_COMMAND, data)
+                for context in contexts
+            )
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_VOICE_COMMAND):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_VOICE_COMMAND,
+            handle_voice_command,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_COMMAND): cv.string,
+                    vol.Optional(ATTR_SILENT, default=True): cv.boolean,
+                    vol.Required(ATTR_DEVICE_ID): vol.Any(
+                        cv.string,
+                        [cv.string],
+                    ),
+                }
+            ),
+        )
     return True
+
+
+def _target_ids(value: Any) -> tuple[str, ...]:
+    """Normalize HA's device target field."""
+
+    if isinstance(value, str) and value:
+        return (value,)
+    if isinstance(value, (list, tuple, set)):
+        return tuple(item for item in value if isinstance(item, str) and item)
+    return ()
+
+
+def _voice_command_contexts(
+    hass: HomeAssistant,
+    target_ids: tuple[str, ...],
+) -> tuple[Any, ...]:
+    """Resolve targeted HA devices to capable Huawei device contexts."""
+
+    from homeassistant.helpers import device_registry as dr
+
+    target_set = set(target_ids)
+    registry = dr.async_get(hass)
+    contexts: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        client = getattr(entry, "runtime_data", None)
+        if client is None:
+            continue
+        for context in getattr(client, "protocol_devices", {}).values():
+            registered = registry.async_get_device(
+                identifiers={device_identifier(context.descriptor)}
+            )
+            if registered is None or registered.id not in target_set:
+                continue
+            if SERVICE_VOICE_COMMAND not in context.service_actions():
+                continue
+            if context.key in seen:
+                continue
+            seen.add(context.key)
+            contexts.append(context)
+    return tuple(contexts)
 
 
 async def async_setup_entry(

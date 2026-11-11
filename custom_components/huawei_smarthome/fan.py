@@ -12,6 +12,18 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .entity_helpers import device_info, entity_available, iter_specs
 
 
+def _percentage_step(value: Any) -> float | None:
+    """解析适配器声明的百分比步进，非法值返回 None。"""
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        step = float(value)
+    except (TypeError, ValueError):
+        return None
+    return step if step > 0 else None
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -40,8 +52,13 @@ class HuaweiAdapterFan(FanEntity):
             features |= FanEntityFeature.TURN_OFF
         if metadata.get("supports_percentage"):
             features |= FanEntityFeature.SET_SPEED
-            if metadata.get("percentage_step") is not None:
-                self._attr_percentage_step = int(metadata["percentage_step"])
+            step = _percentage_step(metadata.get("percentage_step"))
+            if step is not None:
+                # 旧版 HA 用 percentage_step 表达档位步进，新版改由 speed_count
+                # 推导 (percentage_step = 100 / speed_count)。两个属性都写，
+                # 才能在新旧两个版本的 HA 上都得到正确的滑杆步进。
+                self._attr_percentage_step = step
+                self._attr_speed_count = max(1, round(100 / step))
         if metadata.get("preset_modes"):
             features |= FanEntityFeature.PRESET_MODE
         if metadata.get("supports_oscillation"):

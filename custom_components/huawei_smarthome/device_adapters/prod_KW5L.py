@@ -210,18 +210,30 @@ _LOW_BATTERY_PERCENT = 10
 _LOW_BATTERY_THRESHOLD = 5
 _STALE_HOURS = 24.0
 
-# event/userOperation codes that are deliberate unlocks.  0-7 and 24 are
-# declared by this product's Profile; 35/37/38 are interior/relock codes the
-# KW02 firmware was observed to send outside the Profile enum, kept for the
-# same family reason (unverified on KW5L).
-_OUTDOOR_UNLOCK_OPERATIONS = frozenset(range(8))
+# event/userOperation codes that are deliberate unlocks, one set per side of
+# the door (the same shape every sibling lock adapter uses).
+#
+# 0-7 and 24 are declared by this product's Profile.  The Profile enum stops at
+# 33, but this firmware reports further codes, each observed on a live capture:
+#
+#   47  掌静脉开锁      (20:16:01 outdoor, with userName + doorEvent eventType 0)
+#   35  室内一握开锁    (23:08:47 indoor; 20:15:32 indoor)
+#   37  旋钮或钥匙开锁  from the KW02 family, kept for the same reason (unverified here)
+#   38  上锁/自动回锁   (listed below; not an unlock)
+#
+# A code must be in one of these sets for 开门方向 / 最近开门方式 to label it.  An
+# unlisted code still latches, and 最近开门方式 then shows the raw number rather
+# than guessing -- which is how 47 was identified in the first place.
+_OPERATION_PALM_VEIN = 47
 _OPERATION_INDOOR_HANDLE = 35
 _OPERATION_INDOOR_KNOB = 37
 _OPERATION_RELOCK = 38
+_OUTDOOR_UNLOCK_OPERATIONS = frozenset(range(8)) | {_OPERATION_PALM_VEIN}
 _INDOOR_UNLOCK_OPERATIONS = frozenset(
     {24, _OPERATION_INDOOR_HANDLE, _OPERATION_INDOOR_KNOB}
 )
 _FAMILY_OPERATION_LABELS = {
+    _OPERATION_PALM_VEIN: "掌静脉开锁",
     _OPERATION_INDOOR_HANDLE: "室内一握开锁",
     _OPERATION_INDOOR_KNOB: "旋钮或钥匙开锁",
     _OPERATION_RELOCK: "上锁",
@@ -230,8 +242,10 @@ _FAMILY_OPERATION_LABELS = {
 # Codes this adapter knows are *not* an unlock.  Anything else the lock reports
 # on the operation slot is treated as an unlock whose name is still missing, so
 # 开门方向 says 未知 while 最近开门方式 shows the raw code (see
-# ``_looks_like_unlock``).  Derived here because the tables above are defined
-# after ``_KNOWN_NON_UNLOCK_OPERATIONS``'s first use site would be.
+# ``_looks_like_unlock``).  Defined after the unlock sets above because it
+# references ``_OPERATION_RELOCK``; the codes are listed literally rather than
+# derived from the doorbell/arming/call tables so that a code cannot silently
+# enter or leave this set when one of those tables changes.
 _KNOWN_NON_UNLOCK_OPERATIONS = frozenset(
     {22, 29, 30}          # 门铃响铃 / 敲门 / 连续按门铃
     | {27, 28}            # 开启布防 / 解除布防

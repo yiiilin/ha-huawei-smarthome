@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "華為智慧生活",
+        "description": "使用華為帳號登入。",
+        "data": {
+          "account": "華為帳號",
+          "password": "密碼"
+        }
+      },
+      "challenge_channel": {
+        "title": "驗證方式",
+        "description": "選擇華為傳送驗證碼的方式。帳號為使用者名稱或電子郵件時，請改用該帳號繫結的手機號碼登入。",
+        "data": {
+          "challenge_channel": "驗證通道"
+        }
+      },
+      "challenge": {
+        "title": "裝置驗證",
+        "description": "{prompt}。",
+        "data": {
+          "challenge_code": "挑戰碼"
+        }
+      },
+      "home": {
+        "title": "選擇家庭",
+        "description": "選擇需要發現的華為家庭。",
+        "data": {
+          "selected_home_ids": "家庭"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "華為帳號或挑戰碼被拒絕。",
+      "cannot_connect": "無法連線華為智慧生活。",
+      "code_dispatch_failed": "華為未接受該通道的發碼請求。若登入帳號是使用者名稱或電子郵件，請改用繫結的手機號碼登入。",
+      "home_required": "請至少選擇一個家庭。",
+      "reauth_failed": "無法重新驗證華為智慧生活配置。"
+    },
+    "abort": {
+      "already_configured": "此華為帳號已經配置。",
+      "cannot_connect": "無法連線華為智慧生活。",
+      "reauth_failed": "重新驗證失敗。",
+      "unique_id_mismatch": "認證的華為帳號與當前配置項不一致。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "選擇家庭",
+        "description": "選擇需要發現的華為家庭。",
+        "data": {
+          "selected_home_ids": "家庭"
+        }
+      }
+    }
+  },
+  "services": {
+    "voice_command": {
+      "name": "語音命令",
+      "description": "向支援的華為智慧生活音箱傳送自然語言命令。",
+      "fields": {
+        "device_id": {
+          "name": "目標裝置",
+          "description": "執行該命令的華為智慧生活音箱裝置。"
+        },
+        "command": {
+          "name": "命令",
+          "description": "傳送給音箱助手的自然語言命令。"
+        },
+        "silent": {
+          "name": "靜默執行",
+          "description": "執行命令時抑制音箱的語音響應。"
+        }
+      }
+    }
+  }
+}

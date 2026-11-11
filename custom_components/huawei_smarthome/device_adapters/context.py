@@ -16,7 +16,7 @@ from ..domain.models import (
 from ..mqtt.commands import HuaweiCommandGateway
 from ..mqtt.protocol import decode_message
 from ..mqtt_client import HuaweiMqttClient
-from .api import EntitySpec, HuaweiProductAdapter
+from .api import EntityAction, EntitySpec, HuaweiProductAdapter
 
 
 class DeviceContext:
@@ -76,6 +76,26 @@ class DeviceContext:
         if self.adapter is None or self.profile is None:
             return ()
         return self.adapter.entities(self)
+
+    def service_actions(self) -> Mapping[str, EntityAction]:
+        """Return adapter-declared integration service actions."""
+
+        provider = getattr(self.adapter, "service_actions", None)
+        if provider is None:
+            return {}
+        return provider(self)
+
+    async def async_run_service(
+        self,
+        name: str,
+        data: Mapping[str, Any],
+    ) -> None:
+        """Run one adapter-declared integration service action."""
+
+        action = self.service_actions().get(name)
+        if action is None:
+            raise ValueError(f"adapter service is unavailable: {name}")
+        await action(self, data)
 
     def has_service(self, sid: str) -> bool:
         if sid in self._state:

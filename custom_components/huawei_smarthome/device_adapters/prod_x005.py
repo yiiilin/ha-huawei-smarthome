@@ -14,15 +14,18 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
+from ..const import ATTR_COMMAND, ATTR_SILENT, SERVICE_VOICE_COMMAND
 from .api import EntitySpec
 from .context import DeviceContext
 
 _STATE_PLAYING = "playing"
 _STATE_PAUSED = "paused"
 _STATE_IDLE = "idle"
+_TTS_TONE_URL = "https://speaker-drcn.things.hicloud.com:9443/resource/silence.ogg"
 
 
 def _as_int(value: Any) -> int | None:
@@ -54,14 +57,74 @@ async def _stop(context: DeviceContext, _data: Mapping[str, Any]) -> None:
     await context.async_send_service("smartspeaker", {"playControl": 0})
 
 
+async def _speak(context: DeviceContext, data: Mapping[str, Any]) -> None:
+    """Send the verified X005 text-to-speech service command."""
+
+    message = data.get("message")
+    if not isinstance(message, str) or not message:
+        raise ValueError("notify message must be a non-empty string")
+    directive = json.dumps(
+        {
+            "command": {
+                "header": {
+                    "messageId": "",
+                    "name": "SetVoiceSpeech",
+                    "namespace": "Notifications",
+                },
+                "payload": {
+                    "asset": {"text": message, "tone": _TTS_TONE_URL},
+                    "ledProfile": 1,
+                    "loopCount": 1,
+                },
+            }
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    await context.async_send_service("communication", {"directive": directive})
+
+
+async def _voice_command(
+    context: DeviceContext,
+    data: Mapping[str, Any],
+) -> None:
+    """Send one natural-language command through the speaker assistant."""
+
+    command = data.get(ATTR_COMMAND)
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("voice command must be a non-empty string")
+    silent = data.get(ATTR_SILENT, True)
+    if not isinstance(silent, bool):
+        raise ValueError("voice command silent must be a boolean")
+    content = json.dumps(
+        {
+            "asr": command.strip(),
+            "source": "smarthome",
+            "noVui": int(silent),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    await context.async_send_service("speakerIfttt", {"content": content})
+
+
 class ProductX005Adapter:
-    """X005 华为 AI 音箱 2 适配器：一个 media_player 实体。"""
+    """X005 华为 AI 音箱 2 适配器。"""
 
     prod_id = "X005"
 
+    def service_actions(self, context: DeviceContext) -> Mapping[str, Any]:
+        """Declare integration services supported by this product."""
+
+        if not context.has_service("speakerIfttt"):
+            return {}
+        return {SERVICE_VOICE_COMMAND: _voice_command}
+
     def entities(self, context: DeviceContext) -> tuple[EntitySpec, ...]:
-        if context.profile is None or not context.has_service("audioplayer"):
+        if context.profile is None:
             return ()
+
+        entities: list[EntitySpec] = []
 
         def player_state(device: DeviceContext) -> Mapping[str, Any]:
             state_code = _as_int(device.value("audioplayer", "playState"))
@@ -73,19 +136,31 @@ class ProductX005Adapter:
                 state = _STATE_IDLE
             return {"state": state}
 
-        return (
-            EntitySpec(
-                platform="media_player",
-                key="speaker",
-                name=None,
-                state=player_state,
-                actions={
-                    "play": _play,
-                    "pause": _pause,
-                    "stop": _stop,
-                },
-            ),
-        )
+        if context.has_service("audioplayer"):
+            entities.append(
+                EntitySpec(
+                    platform="media_player",
+                    key="speaker",
+                    name=None,
+                    state=player_state,
+                    actions={
+                        "play": _play,
+                        "pause": _pause,
+                        "stop": _stop,
+                    },
+                )
+            )
+        if context.has_service("communication"):
+            entities.append(
+                EntitySpec(
+                    platform="notify",
+                    key="play_text",
+                    name="播放指定文字",
+                    state=lambda _ctx: {},
+                    actions={"send_message": _speak},
+                )
+            )
+        return tuple(entities)
 
 
 ADAPTER = ProductX005Adapter()

@@ -1,0 +1,51 @@
+name: Validate product identifiers
+
+on:
+  pull_request:
+    paths:
+      - "custom_components/huawei_smarthome/device_adapters/**"
+      - "docs/supported-devices.md"
+      - "scripts/check_product_adapters.py"
+      - "scripts/check_supported_devices.py"
+      - ".github/workflows/adapter-validation.yml"
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  adapter-prod-id-uniqueness:
+    name: Adapter prodId uniqueness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate adapter prodIds
+        run: python scripts/check_product_adapters.py
+
+  supported-device-prod-id-uniqueness:
+    name: Supported-device prodId uniqueness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate supported-device prodIds
+        run: python scripts/check_supported_devices.py

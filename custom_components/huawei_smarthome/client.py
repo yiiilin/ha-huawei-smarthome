@@ -15,7 +15,7 @@ from .api.errors import AuthExpiredError
 from .auth.huawei import HuaweiSmartHomeAuthProvider
 from .auth.session import SessionManager
 from .const import (
-    HWHOMEBRIDGE_PROD_IDS,
+    ONECONNECT_GATEWAY_PROD_ID,
     OBSERVED_MQTT_FILTER,
     OBSERVED_MQTT_PORT,
     OBSERVED_MQTT_SUBSCRIPTION_QOS,
@@ -263,9 +263,9 @@ class HuaweiSmartHomeClient:
         self.state.connection = ConnectionState.DISCOVERING
         snapshot = await self.api.async_get_snapshot(session)
         snapshot = self._scope_snapshot(snapshot)
-        snapshot = self._exclude_hwhomebridge_products(snapshot)
+        snapshot = self._filter_discovery_snapshot(snapshot)
         snapshot = await self._hydrate_device_details(session, snapshot)
-        snapshot = self._exclude_hwhomebridge_products(snapshot)
+        snapshot = self._filter_discovery_snapshot(snapshot)
         snapshot = await self._enrich_product_metadata(snapshot)
         if not snapshot.complete:
             raise RuntimeError("Huawei SmartHome snapshot is incomplete")
@@ -377,27 +377,53 @@ class HuaweiSmartHomeClient:
         )
 
     @staticmethod
-    def _exclude_hwhomebridge_products(
+    def _filter_discovery_snapshot(
         snapshot: RemoteDiscoverySnapshot,
     ) -> RemoteDiscoverySnapshot:
-        """Remove HuaweiHome Bridge virtual devices from discovery."""
+        """Remove groups and OneConnect Bridge virtual device subtrees."""
 
-        devices = tuple(
-            device
-            for device in snapshot.devices
-            if not (
-                isinstance(device.prod_id, str)
-                and device.prod_id.strip().upper() in HWHOMEBRIDGE_PROD_IDS
-            )
+        devices = tuple(snapshot.devices)
+        bridge_parent_ids = {
+            device.dev_id
+            for device in devices
+            if isinstance(device.prod_id, str)
+            and device.prod_id.strip().casefold()
+            == ONECONNECT_GATEWAY_PROD_ID.casefold()
+        }
+        excluded_ids = {
+            device.dev_id
+            for device in devices
+            if (device.node_type or "").strip().upper() == "GROUP"
+        }
+        excluded_ids.update(bridge_parent_ids)
+
+        # Child product IDs are intentionally not enumerated.  They may also
+        # be native Huawei devices; the gatewayId relationship identifies the
+        # bridge subtree without excluding those native devices.
+        blocked_gateway_ids = set(bridge_parent_ids)
+        while blocked_gateway_ids:
+            children = {
+                device.dev_id
+                for device in devices
+                if device.gateway_id in blocked_gateway_ids
+            }
+            new_children = children - blocked_gateway_ids
+            if not new_children:
+                break
+            blocked_gateway_ids.update(new_children)
+            excluded_ids.update(new_children)
+
+        filtered_devices = tuple(
+            device for device in devices if device.dev_id not in excluded_ids
         )
-        if len(devices) == len(snapshot.devices):
+        if len(filtered_devices) == len(devices):
             return snapshot
         device_home_index: dict[str, set[str]] = {}
-        for device in devices:
+        for device in filtered_devices:
             device_home_index.setdefault(device.dev_id, set()).add(device.home_id)
         return replace(
             snapshot,
-            devices=devices,
+            devices=filtered_devices,
             device_home_index={
                 dev_id: frozenset(home_ids)
                 for dev_id, home_ids in device_home_index.items()

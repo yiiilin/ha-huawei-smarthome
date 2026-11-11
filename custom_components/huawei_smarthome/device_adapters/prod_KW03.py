@@ -13,13 +13,56 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .api import EntitySpec
 from .context import DeviceContext
 
 _LOGGER = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Latch persistence.
+#
+# 布防状态 / 开门方向 / 最近开门方式 are all derived from the ONE event record
+# the lock happens to have pushed last.  That record is delivered live and only
+# once: after a Home Assistant restart (or an MQTT reconnect, which rebuilds the
+# entities), the cloud snapshot does not replay it, so every reader starts from
+# None and the three entities read "unknown" until somebody operates the lock
+# again.
+#
+# The latch below is process-wide and mirrored to a small JSON file under the
+# Home Assistant config directory, so those entities survive a restart.
+#
+# It is keyed by device id and holds:
+#   operation  last userOperation code that was an unlock (开门方向/最近开门方式)
+#   eid        identifier of that event, so two unlocks from the same side can
+#              still be told apart by an automation
+#   time       the event's clock as reported by the lock
+#   armed      布防状态: True = 开启布防 (27), False = 解除布防 (28)
+#
+# Why a file rather than Home Assistant's Store: this module is imported by the
+# adapter loader, not by an entity callback, so no hass object is in scope.
+# Everything here is plain JSON written off the event loop, which is what the
+# KW02 adapter does for the very same reason.
+_LATCH: dict[str, dict[str, Any]] = {}
+_LATCH_LOADED = False
+# Path layout: <config>/custom_components/huawei_smarthome/device_adapters/prod_KW03.py
+# parents[0]=device_adapters, [1]=huawei_smarthome, [2]=custom_components,
+# [3]=<config>.  Landing anywhere else (for example /.storage) makes the write
+# fail and the latch never survives a restart.
+_LATCH_FILE = (
+    Path(__file__).resolve().parents[3]
+    / ".storage"
+    / "huawei_smarthome_kw03_latch.json"
+)
+# Serialises the background writers; see _write_latch.
+_LATCH_WRITE_LOCK = threading.Lock()
+
 
 _LOCK_STATUS_SID = "lockStatus"
 _LOCK_STATUS_FIELD = "status"
@@ -62,6 +105,12 @@ _EVENT_DATA_SID = "eventData"
 _EVENT_DATA_PAYLOAD_FIELD = "data"
 _USER_OPERATION_FIELD = "up"
 _DOOR_ALARM_FIELD = "das"
+_EVENT_ID_FIELD = "eid"
+# The wire format (verified on the KW02, same eventData layout) reports the
+# event time as "et"; "time" is accepted as a fallback for revisions that
+# spell it out.
+_EVENT_TIME_FIELD = "et"
+_EVENT_TIME_FIELD_ALT = "time"
 
 # Profile characteristic names, used only to resolve enum labels.
 _USER_OPERATION_PROFILE_FIELD = "userOperation"
@@ -146,6 +195,97 @@ _INDOOR_UNLOCK_OPERATIONS = frozenset(
     {24, _OPERATION_INDOOR_HANDLE, _OPERATION_INDOOR_KNOB}
 )
 _OUTDOOR_UNLOCK_OPERATIONS = frozenset(range(8))
+
+# 布防动作：Profile 的 userOperation 里 27 = 开启布防，28 = 解除布防。两者都不是
+# 开锁操作，因此不会进入上面的开锁 latch，需要单独记住。
+_OPERATION_ARM = 27  # 开启布防
+_OPERATION_DISARM = 28  # 解除布防
+
+_ARM_LABEL_ARMED = "开启布防"
+_ARM_LABEL_DISARMED = "解除布防"
+
+
+def _load_latch() -> None:
+    """Load the latch once, before the first entity is written.
+
+    Called at import time so the very first state read after a restart already
+    sees the previous session's values instead of starting from None.
+    """
+
+    global _LATCH_LOADED
+    if _LATCH_LOADED:
+        return
+    _LATCH_LOADED = True
+    try:
+        raw = json.loads(_LATCH_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(raw, dict):
+        return
+    for device_id, payload in raw.items():
+        if isinstance(device_id, str) and isinstance(payload, dict):
+            _LATCH[device_id] = dict(payload)
+
+
+def _write_latch(payload: str) -> None:
+    """Persist the latch off the Home Assistant event loop.
+
+    Every event spawns a writer, so two writers can easily overlap: a shared
+    ``.json.tmp`` name meant the first ``replace`` consumed the file the second
+    writer was about to move, and the loser raised FileNotFoundError.  A lock
+    serialises them and the temp name is unique per call, so the last writer
+    always wins with a complete file.
+
+    Failures are logged at warning level on purpose: a silently unwritable
+    latch means 布防状态 / 开门方向 / 最近开门方式 go back to unknown after the
+    next restart, and a debug-only message would leave the user chasing a
+    symptom with no clue in the log.
+    """
+
+    try:
+        _LATCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with _LATCH_WRITE_LOCK:
+            temporary = _LATCH_FILE.with_name(
+                f"{_LATCH_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            try:
+                temporary.write_text(payload, encoding="utf-8")
+                temporary.replace(_LATCH_FILE)
+            finally:
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        _LOGGER.warning(
+            "KW03 latch could not be saved to %s; door state will reset to "
+            "unknown after a restart",
+            _LATCH_FILE,
+            exc_info=True,
+        )
+
+
+def _remember(device_id: str, **changes: Any) -> None:
+    """Update one device's latch in memory and mirror it to disk.
+
+    ``changes`` are merged into the stored record so an unlock and a following
+    布防 update never overwrite each other.
+    """
+
+    if not device_id:
+        return
+    record = dict(_LATCH.get(device_id, {}))
+    record.update(changes)
+    _LATCH[device_id] = record
+    encoded = json.dumps(_LATCH, ensure_ascii=False)
+    threading.Thread(target=_write_latch, args=(encoded,), daemon=True).start()
+
+
+_load_latch()
+
+
+def _device_latch(device: DeviceContext) -> Mapping[str, Any]:
+    return _LATCH.get(device.dev_id, {})
 
 
 def _service(profile: Mapping[str, Any], sid: str) -> Mapping[str, Any] | None:
@@ -421,31 +561,253 @@ def _event_record(device: DeviceContext) -> Mapping[str, Any]:
     return record
 
 
-def _unlock_reader() -> Callable[[DeviceContext], Any]:
-    """Return a reader that keeps the latest unlock seen by one entity.
+def _event_kind(record: Mapping[str, Any]) -> str | None:
+    """Classify one lock event record as unlock / lock / alarm / motion.
 
-    The lock reports every event on ``eventData``, so reading the field directly
-    would let a following record such as \"door closed\" overwrite the unlock
-    code.  The most recent value the Profile recognises as an unlock is cached
-    instead, and later non-unlock records leave it untouched.
+    The classification mirrors the adapter's own state entities so an event and
+    its matching sensor can never disagree about what happened.
+
+    Two wire quirks drive the order of the checks (verified on the KW02, same
+    event/eventData layout):
+
+    * ``event`` is emitted only for credential unlocks and its ``up`` lives in a
+      different code space (201 for a credential unlock, never a Profile value),
+      so an ``up`` the Profile cannot place is not "no event" when the record
+      carries a user name -- it is an unlock.  ``eventData`` remains the
+      authority for operations it does describe.
+    * the observed ``event`` payload for a loitering detection also carried
+      ``up: 201`` while its ``aid`` embedded ``MOTION_DETECTION``, so the aid
+      token is checked first and otherwise such a record would be reported as an
+      unlock.
     """
 
-    cache: dict[str, Any] = {"operation": None}
+    identifier = record.get("aid")
+    if isinstance(identifier, str) and "MOTION_DETECTION" in identifier.upper():
+        return "motion"
+    alarm = _number(record.get(_DOOR_ALARM_FIELD))
+    if alarm is not None and alarm >= 1:
+        return "alarm"
+    operation = _number(record.get(_USER_OPERATION_FIELD))
+    if operation == _OPERATION_RELOCK:
+        return "lock"
+    if _unlock_direction(operation) is not None:
+        return "unlock"
+    # An operation the Profile does not describe, together with a user name,
+    # is the credential-unlock copy of the event.
+    user = record.get("un")
+    if isinstance(user, str) and user.strip():
+        return "unlock"
+    return None
 
-    def read(device: DeviceContext) -> Any:
-        operation = _number(_event_record(device).get(_USER_OPERATION_FIELD))
+
+def _event_identifier(record: Mapping[str, Any]) -> str | None:
+    """Return the identifier the lock assigns to one occurrence.
+
+    ``event``/``eventData`` carry ``eid``, which increments per event, so it is
+    what actually distinguishes two consecutive unlocks.  The nested
+    ``aid``/``id`` fields are a fallback for revisions that omit ``eid``.
+    """
+
+    for key in (_EVENT_ID_FIELD, "aid", "id"):
+        value = record.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _lock_event_decoder(
+    device: DeviceContext,
+    sid: str,
+    data: Mapping[str, Any],
+    timestamp: str | None,
+) -> list[tuple[str, Mapping[str, Any]]]:
+    """Turn one lock event push into a Home Assistant event.
+
+    The lock pushes every operation once and never sends the cleared value, so
+    the state entities (最近开门方式 / 开门方向 / 最近告警 / 布防状态) only
+    describe *what happened last*.  Two consecutive unlocks by the same person
+    through the same method produce no state change at all, which means an
+    automation built on those entities runs once and then stops.
+
+    This decoder supplies the missing half: each accepted push fires an event,
+    so an automation can listen to the entity's ``unlock`` / ``lock`` / ``alarm``
+    / ``motion`` event types and run on every occurrence.
+
+    ``event`` carries the user-facing fields (``un`` = user name, ``cl`` =
+    clock) while ``eventData`` carries the operation and alarm codes, so the two
+    are merged exactly the way ``_event_record`` does for the state readers.
+    """
+
+    if sid not in (_EVENT_SID, _EVENT_DATA_SID):
+        return []
+
+    # Decode THIS push, not the standing record.  ``_event_record`` merges both
+    # services because the state readers want the latest known picture, but an
+    # event must not inherit the previous occurrence: the lock reports a
+    # "door closed" record on ``eventData`` right after an unlock, so merging the
+    # cached half would relabel that unlock as a lock and reuse its id.
+    #
+    # The other service is therefore consulted only for fields this push does
+    # not carry: ``un``/``cl`` arrive on ``event`` while ``up``/``das`` arrive on
+    # ``eventData``, and a push may legitimately carry only one half.
+    def _parsed_payload(value: Any) -> Mapping[str, Any]:
+        if isinstance(value, Mapping):
+            return value
+        if isinstance(value, str) and value:
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                return {}
+            if isinstance(parsed, Mapping):
+                return parsed
+        return {}
+
+    current: dict[str, Any] = dict(data)
+    if sid == _EVENT_DATA_SID:
+        current.pop(_EVENT_DATA_PAYLOAD_FIELD, None)
+        current.update(_parsed_payload(data.get(_EVENT_DATA_PAYLOAD_FIELD)))
+    elif sid == _EVENT_SID:
+        current.update(device.service_state(_EVENT_DATA_SID))
+        current.pop(_EVENT_DATA_PAYLOAD_FIELD, None)
+        other = _parsed_payload(
+            device.value(_EVENT_DATA_SID, _EVENT_DATA_PAYLOAD_FIELD)
+        )
+        # Only fill in what this push lacks, and never take the *identity* of an
+        # event from the other service.
+        identity_fields = (_EVENT_ID_FIELD, "aid", "id", _EVENT_TIME_FIELD)
+        for key, value in other.items():
+            if key in identity_fields:
+                continue
+            current.setdefault(key, value)
+
+    merged = current
+
+    kind = _event_kind(merged)
+    if kind is None:
+        # Credential management, arming, doorbell and similar records are not
+        # user-visible door events, so they deliberately produce nothing.  布防
+        # changes are tracked by the 布防状态 sensor instead.
+        return []
+
+    operation = _number(merged.get(_USER_OPERATION_FIELD))
+    profile_field = _field(
+        device.profile or {}, _EVENT_SID, _USER_OPERATION_PROFILE_FIELD
+    ) or {}
+    alarm_field = _field(
+        device.profile or {}, _EVENT_SID, _DOOR_ALARM_PROFILE_FIELD
+    ) or {}
+
+    occurred = (
+        merged.get(_EVENT_TIME_FIELD) or merged.get(_EVENT_TIME_FIELD_ALT)
+    )
+    payload: dict[str, Any] = {
+        "event_id": _event_identifier(merged),
+        "user": merged.get("un"),
+        "clock": merged.get("cl"),
+        "occurred_at": occurred or timestamp,
+        "method": _operation_label(profile_field, operation),
+        "direction": _unlock_direction(operation),
+    }
+    alarm_code = _number(merged.get(_DOOR_ALARM_FIELD))
+    if kind == "alarm":
+        payload["alarm"] = _enum_label(alarm_field, alarm_code)
+    return [(kind, {k: v for k, v in payload.items() if v is not None})]
+
+
+def _lock_event_spec() -> EntitySpec:
+    """One event entity that fires for every unlock, lock and door alarm.
+
+    Unlike the latched state sensors this fires on EVERY push, so an automation
+    listening to the entity's event types runs for each occurrence -- including
+    two identical unlocks in a row that would never change a sensor's state.
+    """
+
+    return EntitySpec(
+        platform="event",
+        key="lock_event",
+        name="门锁事件",
+        state=lambda device: {},
+        metadata={
+            "event_types": ["unlock", "lock", "alarm", "motion"],
+            "icon": "mdi:door-open",
+        },
+        event_decoder=_lock_event_decoder,
+    )
+
+
+def _unlock_reader() -> Callable[[DeviceContext], Mapping[str, Any]]:
+    """Return a reader that keeps the latest unlock across reconnects.
+
+    The lock reports every event on ``eventData``, so reading the field directly
+    would let a following record such as "door closed" overwrite the unlock
+    code.  The most recent value recognised as an unlock is latched instead, and
+    later non-unlock records leave it untouched.
+
+    The latch used to live in this closure.  That is what broke after a
+    reconnect: ``entities()`` builds a fresh closure, the standing record is
+    usually the auto re-lock (38), and the sensors fell back to unknown.  It now
+    lives in ``_LATCH`` (mirrored to disk), keyed by device id, so it outlives
+    both the entity objects and the process.
+
+    The triggering event's id and clock are latched with it, because a latched
+    direction alone cannot tell two unlocks from the same side apart.
+    """
+
+    def read(device: DeviceContext) -> Mapping[str, Any]:
+        record = _event_record(device)
+        operation = _number(record.get(_USER_OPERATION_FIELD))
         if _unlock_direction(operation) is not None:
-            cache["operation"] = operation
-        return cache["operation"]
+            _remember(
+                device.dev_id,
+                operation=operation,
+                eid=record.get(_EVENT_ID_FIELD),
+                time=record.get(_EVENT_TIME_FIELD) or record.get(_EVENT_TIME_FIELD_ALT),
+            )
+        return _device_latch(device)
 
     return read
 
 
-def _open_direction_spec(read_unlock: Callable[[DeviceContext], Any]) -> EntitySpec:
+def _unlock_attribute_state(
+    unlock: Mapping[str, Any],
+    native_value: Any,
+) -> dict[str, Any]:
+    """Publish the latched event id/clock where the sensor platform can see it.
+
+    ``HuaweiAdapterSensor`` only copies ``extra_state_attributes`` onto the
+    entity, so a latched direction that does not change between two unlocks from
+    the same side would never trigger an automation.  The event id changes on
+    every unlock, so it can drive an ``attribute`` trigger while the state still
+    answers "which side".
+    """
+
+    if native_value is None:
+        return {"native_value": None}
+    attributes: dict[str, Any] = {}
+    # The latch record stores the event time under the key "time" (see
+    # _unlock_reader); _EVENT_TIME_FIELD only names the wire field.
+    event_id = unlock.get(_EVENT_ID_FIELD)
+    event_time = unlock.get("time")
+    if event_id is not None and str(event_id).strip():
+        attributes["last_event_id"] = str(event_id).strip()
+    if event_time is not None and str(event_time).strip():
+        attributes["last_event_time"] = str(event_time).strip()
+    state: dict[str, Any] = {"native_value": native_value}
+    if attributes:
+        state["extra_state_attributes"] = attributes
+    return state
+
+
+def _open_direction_spec(
+    read_unlock: Callable[[DeviceContext], Mapping[str, Any]],
+) -> EntitySpec:
     """Expose whether the latest unlock came from the indoor or outdoor side."""
 
     def state(device: DeviceContext) -> Mapping[str, Any]:
-        return {"native_value": _unlock_direction(read_unlock(device))}
+        unlock = read_unlock(device)
+        return _unlock_attribute_state(
+            unlock, _unlock_direction(unlock.get("operation"))
+        )
 
     return EntitySpec(
         platform="sensor",
@@ -457,17 +819,20 @@ def _open_direction_spec(read_unlock: Callable[[DeviceContext], Any]) -> EntityS
 
 def _last_open_method_spec(
     profile: Mapping[str, Any],
-    read_unlock: Callable[[DeviceContext], Any],
+    read_unlock: Callable[[DeviceContext], Mapping[str, Any]],
 ) -> EntitySpec:
     """Expose the Profile label of the latest unlock operation."""
 
     field = _field(profile, _EVENT_SID, _USER_OPERATION_PROFILE_FIELD) or {}
 
     def state(device: DeviceContext) -> Mapping[str, Any]:
-        value = _number(read_unlock(device))
+        unlock = read_unlock(device)
+        value = _number(unlock.get("operation"))
         if value is None:
-            return {"native_value": None}
-        return {"native_value": _operation_label(field, value) or str(value)}
+            return _unlock_attribute_state(unlock, None)
+        return _unlock_attribute_state(
+            unlock, _operation_label(field, value) or str(value)
+        )
 
     return EntitySpec(
         platform="sensor",
@@ -501,20 +866,43 @@ def _door_alarm_spec(profile: Mapping[str, Any]) -> EntitySpec:
 
 
 def _arm_state_spec(profile: Mapping[str, Any]) -> EntitySpec:
-    """布防状态：userOperation 27 = 开启布防，28 = 解除布防（其余操作沿用上次状态）。"""
+    """布防状态：userOperation 27 = 开启布防，28 = 解除布防（其余操作沿用上次状态）。
 
-    cache: dict[str, Any] = {"armed": None}
+    布防是"一次性事件"：锁只在用户按下布防/撤防的那一刻上报 27/28，之后任何一次开门
+    （0-7、35、37）或自动上锁（38）都会把 eventData 的最新记录覆盖掉。若直接读当前记录，
+    布防状态会在下一次开门时丢失；若只放在闭包里，重连/重启后又回到未知。因此这里和开锁
+    一样，把 27/28 的结果写进跨重启持久化的 latch，非布防事件不改动它。
+    """
+
+    field = _field(profile, _EVENT_SID, _USER_OPERATION_PROFILE_FIELD) or {}
 
     def state(device: DeviceContext) -> Mapping[str, Any]:
-        op = _number(_event_record(device).get(_USER_OPERATION_FIELD))
-        if op == 27:
-            cache["armed"] = True
-        elif op == 28:
-            cache["armed"] = False
-        # 其它操作保持上一次布防状态不变，避免被非布防事件冲掉
-        if cache["armed"] is None:
+        record = _event_record(device)
+        operation = _number(record.get(_USER_OPERATION_FIELD))
+        if operation == _OPERATION_ARM:
+            _remember(device.dev_id, armed=True)
+        elif operation == _OPERATION_DISARM:
+            _remember(device.dev_id, armed=False)
+
+        armed = _device_latch(device).get("armed")
+        if armed is None:
             return {"native_value": None}
-        return {"native_value": "开启布防" if cache["armed"] else "解除布防"}
+
+        # 状态变化时把触发它的操作/时间作为属性带上，方便自动化定位是哪一次布防。
+        state_: dict[str, Any] = {
+            "native_value": _ARM_LABEL_ARMED if armed else _ARM_LABEL_DISARMED
+        }
+        if operation in (_OPERATION_ARM, _OPERATION_DISARM):
+            attributes: dict[str, Any] = {
+                "last_operation": _operation_label(field, operation),
+            }
+            event_time = (
+                record.get(_EVENT_TIME_FIELD) or record.get(_EVENT_TIME_FIELD_ALT)
+            )
+            if event_time is not None and str(event_time).strip():
+                attributes["last_event_time"] = str(event_time).strip()
+            state_["extra_state_attributes"] = attributes
+        return state_
 
     return EntitySpec(
         platform="sensor",
@@ -559,6 +947,10 @@ class ProductKW03Adapter:
             entities.append(_door_alarm_spec(profile))
             # New arm state sensor
             entities.append(_arm_state_spec(profile))
+            # The state entities above describe the latest operation; this event
+            # entity fires on every operation, so an automation runs on each
+            # unlock instead of only on the first one.
+            entities.append(_lock_event_spec())
         return tuple(entities)
 
 

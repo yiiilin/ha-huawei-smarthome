@@ -5,6 +5,10 @@ from __future__ import annotations
 DOMAIN = "huawei_smarthome"
 MANUFACTURER = "Huawei SmartHome"
 
+SERVICE_VOICE_COMMAND = "voice_command"
+ATTR_COMMAND = "command"
+ATTR_SILENT = "silent"
+
 CONF_ACCOUNT = "account"
 CONF_USER_ID = "user_id"
 CONF_IDENTITY_FINGERPRINT = "identity_fingerprint"
@@ -58,22 +62,11 @@ PLATFORMS = (
     "water_heater",
     "lock",
     "media_player",
+    "notify",
     "text",
 )
 UNASSIGNED_HOME_ID = "__unassigned__"
 
-# HuaweiHome Bridge registers HA entities in Huawei IoT with these virtual
-# product IDs.  Importing them here would feed the same entities back into HA.
-HWHOMEBRIDGE_PROD_IDS = frozenset(
-    {
-        "9MTJ",
-        "9MTL",
-        "9MTM",
-        "9MTR",
-        "9MTV",
-        "9MTW",
-        "9MTX",
-        "9MU7",
-        "ZG37",
-    }
-)
+# OneConnect Bridge registers one virtual parent gateway.  Its child products
+# are user-selected and must be filtered through the gatewayId relationship.
+ONECONNECT_GATEWAY_PROD_ID = "ZG37"
