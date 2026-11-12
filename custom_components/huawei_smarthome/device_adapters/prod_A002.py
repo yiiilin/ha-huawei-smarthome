@@ -14,6 +14,7 @@ from .product_helpers import (
     enum_label,
     enum_value_for_label,
     matches_product,
+    profile_field,
     read_number,
     send_profile_value,
 )
@@ -63,6 +64,20 @@ def _ha_value(context: Any, sid: str, field: str, value: Any, label_map: Mapping
 def _profile_label(context: Any, sid: str, field: str, value: str, label_map: Mapping[str, str]) -> Any | None:
     label = next((label for label, ha_value in label_map.items() if ha_value == value), None)
     return enum_value_for_label(context, sid, field, label) if label is not None else None
+
+
+_TEMP_MIN = 17.0
+_TEMP_MAX = 30.0
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _target_temperature(context: Any) -> float | None:
@@ -129,6 +144,39 @@ async def _turn_off(context: Any, _data: Mapping[str, Any]) -> None:
     await send_profile_value(context, "switch", "on", False)
 
 
+async def _set_temperature(context: Any, data: Mapping[str, Any]) -> None:
+    """Write the AC setpoint.
+
+    这些美的机型的 Profile 把 temperature.target 报成 0–40 的整数，但云端实际
+    按“十分之一度”落到设备上（发 25 会变成 2.5℃，被钳到下限 17），所以这里
+    统一乘 10 再发。
+    """
+
+    raw = data.get("temperature")
+    if raw is None:
+        raise ValueError("target temperature is required")
+    try:
+        target = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"invalid target temperature: {raw!r}") from None
+    if not math.isfinite(target):
+        raise ValueError("invalid target temperature")
+
+    target = max(_TEMP_MIN, min(_TEMP_MAX, target))
+    target = float(round(target))
+    await context.async_send_service("temperature", {"target": int(target * 10)})
+
+
+def _temperature_bounds(context: Any) -> dict[str, float]:
+    """Expose the real usable range (Profile 报的 0–40 是原始量程，不可用)."""
+
+    return {
+        "min_temp": _TEMP_MIN,
+        "max_temp": _TEMP_MAX,
+        "target_temperature_step": 1.0,
+    }
+
+
 class A002Adapter:
     prod_id = "A002"
 
@@ -173,6 +221,8 @@ class A002Adapter:
             actions["set_fan_mode"] = _set_fan_mode
         if swing_modes:
             actions["set_swing_mode"] = _set_swing_mode
+        if can_write(context, "temperature", "target"):
+            actions["set_temperature"] = _set_temperature
 
         specs = [
             EntitySpec(
@@ -186,6 +236,7 @@ class A002Adapter:
                         else _ha_value(ctx, "mode", "mode", ctx.value("mode", "mode"), _MODE_LABELS)
                     ),
                     "current_temperature": read_number(ctx, "temperature", "current"),
+                    "target_temperature": _target_temperature(ctx),
                     "fan_mode": _ha_value(ctx, "fan", "mode", ctx.value("fan", "mode"), _FAN_LABELS),
                     "swing_mode": _ha_value(
                         ctx, "fan", "direction", ctx.value("fan", "direction"), _SWING_LABELS
@@ -195,9 +246,7 @@ class A002Adapter:
                     "hvac_modes": hvac_modes,
                     "fan_modes": fan_modes,
                     "swing_modes": swing_modes,
-                    "min_temp": 17,
-                    "max_temp": 30,
-                    "target_temperature_step": 0.5,
+                    **_temperature_bounds(context),
                     "temperature_unit": "°C",
                 },
                 actions=actions,
