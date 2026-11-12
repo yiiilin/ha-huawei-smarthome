@@ -71,9 +71,22 @@ async def _select_play_control(context: DeviceContext, data: Mapping[str, Any]) 
     await context.async_send_service("smartspeaker", {"playControl": val})
 
 
-# 说明：smartspeaker.volume / muteStatus 在云端是只读的——写入回 200 但不落到
-# 设备（实测 volume 38 写 30、muteStatus 0 写 1，设备状态与上报时间都没变），
-# 所以只读展示音量，不暴露假滑杆；音量/静音走华为私有音频通道。
+# 说明：smartspeaker.volume 可写（实测 38 → 30 回读 0.3 生效）；muteStatus
+# 写入不落设备（发 1 后仍为 0），所以只做音量，不暴露静音开关。
+
+async def _set_volume(context: DeviceContext, data: Mapping[str, Any]) -> None:
+    """HA 传 0–1，云端要 0–100。"""
+
+    raw = data.get("volume")
+    if raw is None:
+        raise ValueError("volume is required")
+    try:
+        level = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"invalid volume: {raw!r}") from None
+    level = int(round(max(0.0, min(1.0, level)) * 100))
+    await context.async_send_service("smartspeaker", {"volume": level})
+
 
 async def _play(context: DeviceContext, _data: Mapping[str, Any]) -> None:
     await context.async_send_service("smartspeaker", {"playControl": 1})
@@ -137,7 +150,8 @@ class ProductX0A5Adapter:
         return (
             EntitySpec(platform="media_player", key="player", name="播放",
                        state=player_state, metadata={},
-                       actions={"play": _play, "pause": _pause, "stop": _pause}),
+                       actions={"play": _play, "pause": _pause, "stop": _pause,
+                                "volume": _set_volume}),
             EntitySpec(platform="sensor", key="speaker_state", name="音箱状态",
                        state=speaker_state, metadata={"icon": "mdi:speaker"}),
             EntitySpec(platform="sensor", key="play_state", name="播放状态",
