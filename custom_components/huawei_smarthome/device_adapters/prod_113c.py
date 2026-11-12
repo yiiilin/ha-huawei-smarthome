@@ -39,6 +39,20 @@ def _is_on(value: Any) -> bool | None:
     return None
 
 
+def _bit0(value: Any) -> bool | None:
+    """豪恩 lowBattery 是位图（实测 1376256），只有 bit0 是低电量标志。"""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return bool(number & 1)
+
+
 class Product113cAdapter:
     """Project the 113C motion and low-battery services."""
 
@@ -76,7 +90,7 @@ class Product113cAdapter:
         ) is not None:
 
             def low_battery_state(device: DeviceContext) -> Mapping[str, Any]:
-                return {"is_on": _is_on(device.value("battery", "lowBattery"))}
+                return {"is_on": _bit0(device.value("battery", "lowBattery"))}
 
             entities.append(
                 EntitySpec(

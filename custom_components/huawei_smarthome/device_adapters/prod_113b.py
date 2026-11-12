@@ -35,6 +35,24 @@ def _bool(value: Any) -> bool | None:
     return None
 
 
+def _bit0(value: Any) -> bool | None:
+    """豪恩把 status / lowBattery 上报成位图，只有 bit0 是真正的开关位。
+
+    实测: status=268691080、lowBattery=16777472，直接按 bool 判断会永远为真
+    （门磁恒“打开”、电池恒“低电量”）。
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return bool(number & 1)
+
+
 class Product113BAdapter:
     """113B 门磁适配器：开合状态 + 防拆 两个 binary_sensor。"""
 
@@ -45,12 +63,15 @@ class Product113BAdapter:
             return ()
 
         def status_state(device: DeviceContext) -> Mapping[str, Any]:
-            return {"is_on": _bool(device.value("doorSensor", "status"))}
+            return {"is_on": _bit0(device.value("doorSensor", "status"))}
 
         def tamper_state(device: DeviceContext) -> Mapping[str, Any]:
             return {"is_on": _bool(device.value("doorSensor", "tamper"))}
 
-        return (
+        def low_battery_state(device: DeviceContext) -> Mapping[str, Any]:
+            return {"is_on": _bit0(device.value("battery", "lowBattery"))}
+
+        entities = [
             EntitySpec(
                 platform="binary_sensor",
                 key="status",
@@ -65,7 +86,18 @@ class Product113BAdapter:
                 state=tamper_state,
                 metadata={"device_class": "tamper"},
             ),
-        )
+        ]
+        if context.has_service("battery"):
+            entities.append(
+                EntitySpec(
+                    platform="binary_sensor",
+                    key="low_battery",
+                    name="低电量",
+                    state=low_battery_state,
+                    metadata={"device_class": "battery"},
+                )
+            )
+        return tuple(entities)
 
 
 ADAPTER = Product113BAdapter()

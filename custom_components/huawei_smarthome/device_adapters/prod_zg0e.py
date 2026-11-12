@@ -283,6 +283,40 @@ def _luminance_sensor(profile: Any) -> EntitySpec | None:
     )
 
 
+def _reading_sensor(
+    context: DeviceContext,
+    sid: str,
+    field: str,
+    key: str,
+    name: str,
+    unit: str,
+    device_class: str,
+) -> EntitySpec | None:
+    """通用读数传感器：服务存在就建实体（不依赖 Profile 声明）。
+
+    场景面板自带温湿度探头，实测 temperature.current=28、humidity.current=49
+    （整度/整百分比，不缩放），但 Profile 没有 current 特征、H5 也不展示，
+    所以上游适配器漏了这两个读数。
+    """
+
+    if not context.has_service(sid):
+        return None
+
+    def state(context: DeviceContext) -> dict[str, Any]:
+        raw = _int_state(context, sid, field)
+        if raw is None:
+            return {}
+        return {"native_value": raw}
+
+    return EntitySpec(
+        platform="sensor",
+        key=key,
+        name=name,
+        state=state,
+        metadata={"unit": unit, "device_class": device_class, "state_class": "measurement"},
+    )
+
+
 _FAULT_BITS: tuple[tuple[int, str], ...] = (
     (1, "过温保护"),
     (2, "显示屏故障"),
@@ -359,7 +393,18 @@ class ProductZG0EAdapter:
             if spec is not None:
                 specs.append(spec)
 
-        for spec in (_luminance_sensor(profile), _fault_sensor(profile)):
+        for spec in (
+            _reading_sensor(
+                context, "temperature", "current",
+                "indoor_temperature", "室内温度", "°C", "temperature",
+            ),
+            _reading_sensor(
+                context, "humidity", "current",
+                "indoor_humidity", "室内湿度", "%", "humidity",
+            ),
+            _luminance_sensor(profile),
+            _fault_sensor(profile),
+        ):
             if spec is not None:
                 specs.append(spec)
 

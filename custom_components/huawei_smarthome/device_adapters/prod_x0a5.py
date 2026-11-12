@@ -71,6 +71,10 @@ async def _select_play_control(context: DeviceContext, data: Mapping[str, Any]) 
     await context.async_send_service("smartspeaker", {"playControl": val})
 
 
+# 说明：smartspeaker.volume / muteStatus 在云端是只读的——写入回 200 但不落到
+# 设备（实测 volume 38 写 30、muteStatus 0 写 1，设备状态与上报时间都没变），
+# 所以只读展示音量，不暴露假滑杆；音量/静音走华为私有音频通道。
+
 async def _play(context: DeviceContext, _data: Mapping[str, Any]) -> None:
     await context.async_send_service("smartspeaker", {"playControl": 1})
 
@@ -114,6 +118,8 @@ class ProductX0A5Adapter:
 
         def player_state(device: DeviceContext) -> Mapping[str, Any]:
             val = _as_int(device.value("audioplayer", "playState"))
+            volume = _as_int(device.value("smartspeaker", "volume"))
+            mute = _as_int(device.value("smartspeaker", "muteStatus"))
             return {
                 "state": (
                     "playing"
@@ -124,6 +130,8 @@ class ProductX0A5Adapter:
                     if val == 2
                     else None
                 ),
+                "volume_level": None if volume is None else volume / 100,
+                "is_volume_muted": None if mute is None else bool(mute),
             }
 
         return (
