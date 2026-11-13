@@ -147,6 +147,25 @@ def _sensor(
     )
 
 
+def _state_number_sensor(ctx, sid, key, name, *, unit=None, icon=None):
+    """Profile 未声明特征、但设备确实上报的数值字段（如 moveRange.length）。"""
+
+    if ctx.value(sid, key) is None:
+        return None
+    metadata = {}
+    if unit:
+        metadata["unit"] = unit
+    if icon:
+        metadata["icon"] = icon
+    return EntitySpec(
+        "sensor",
+        f"{sid}_{key}",
+        name,
+        lambda c: {"native_value": _number(c.value(sid, key))},
+        metadata=metadata,
+    )
+
+
 def _covers(ctx):
     profile = ctx.profile or {}
     if (profile.get("prodId") or "").casefold() != "27wb":
@@ -210,6 +229,14 @@ def _covers(ctx):
     raw_position = _sensor(ctx, "opener", "current", "位置原始值", unit="%")
     if raw_position:
         result.append(raw_position)
+    for extra in (
+        _sensor(ctx, "action", "action", "运行状态", enum=True),
+        _sensor(ctx, "dryContactSetting", "status", "干接点接通", binary=True),
+        _sensor(ctx, "dryContactSetting", "mode", "干接点模式", enum=True),
+        _state_number_sensor(ctx, "moveRange", "length", "行程长度", icon="mdi:ruler"),
+    ):
+        if extra:
+            result.append(extra)
     return tuple((e for e in result if e))
 
 

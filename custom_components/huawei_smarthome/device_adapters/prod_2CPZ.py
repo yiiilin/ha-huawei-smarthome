@@ -68,7 +68,8 @@ class TwoCPZAdapter:
         position_meta = number_metadata(context, "opener", "target")
         if position_meta is not None:
             metadata.update(position_meta)
-        return (
+        position = read_number(context, "opener", "current")
+        entities = [
             EntitySpec(
                 platform="cover",
                 key="curtain",
@@ -86,7 +87,21 @@ class TwoCPZAdapter:
                 metadata=metadata,
                 actions=actions,
             ),
-        )
+        ]
+        if position is not None:
+            # 27WB 有"位置原始值"，这里补齐同名诊断实体，两块窗帘行为一致。
+            entities.append(
+                EntitySpec(
+                    platform="sensor",
+                    key="opener_current",
+                    name="位置原始值",
+                    state=lambda ctx: {
+                        "native_value": read_number(ctx, "opener", "current")
+                    },
+                    metadata={"unit": "%"},
+                )
+            )
+        return tuple(entities)
 
 
 ADAPTER: HuaweiProductAdapter = TwoCPZAdapter()
